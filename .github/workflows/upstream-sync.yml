@@ -1,0 +1,53 @@
+name: Sync Fork with Upstream
+
+on:
+  schedule:
+    - cron: "30 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/0x11DFE/controld-hagezi-sync.git
+          git fetch upstream main
+
+      - name: Sync upstream changes
+        run: |
+          # Save your custom configuration
+          cp config.toml /tmp/config.toml
+
+          # Update everything else from upstream
+          git checkout upstream/main -- .
+
+          # Restore your custom configuration
+          cp /tmp/config.toml config.toml
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "Already up to date."
+            exit 0
+          fi
+
+          git commit -m "Sync with upstream"
+
+      - name: Push changes
+        run: |
+          git push origin main
