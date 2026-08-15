@@ -8,39 +8,163 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: upstream-fork-sync
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
+      # ------------------------------------------------------------
+      # 1. Checkout Teddy's fork
+      # ------------------------------------------------------------
       - name: Checkout fork
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          persist-credentials: true
 
+      # ------------------------------------------------------------
+      # 2. Configure Git
+      # ------------------------------------------------------------
       - name: Configure Git
+        shell: bash
         run: |
+          set -euo pipefail
+
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Fetch latest fork and upstream
+      # ------------------------------------------------------------
+      # 3. Fetch Teddy/main and upstream/main
+      # ------------------------------------------------------------
+      - name: Fetch repositories
+        shell: bash
         run: |
-          git fetch origin main
-          git fetch https://github.com/0x11DFE/controld-hagezi-sync.git main
+          set -euo pipefail
 
-      - name: Sync upstream changes
+          git fetch --prune origin main
+          git fetch --prune \
+            https://github.com/0x11DFE/controld-hagezi-sync.git \
+            main
+
+          echo "Teddy/main:"
+          git rev-parse origin/main
+
+          echo "Upstream/main:"
+          git rev-parse FETCH_HEAD
+
+      # ------------------------------------------------------------
+      # 4. Build the synchronized tree
+      # ------------------------------------------------------------
+      - name: Build synchronized tree
+        shell: bash
         run: |
-          # Start from the latest version of YOUR fork
+          set -euo pipefail
+
+          # Always start from the latest Teddy/main.
           git reset --hard origin/main
 
-          # Save your custom configuration
-          cp config.toml /tmp/config.toml
+          # Preserve Teddy's custom configuration.
+          if [[ ! -f config.toml ]]; then
+            echo "::error::config.toml does not exist"
+            exit 1
+          fi
 
-          # Apply upstream files
+          cp config.toml /tmp/teddy-config.toml
+
+          # Record the exact upstream commit being imported.
+          UPSTREAM_COMMIT="$(git rev-parse FETCH_HEAD)"
+          printf '%s\n' "$UPSTREAM_COMMIT" > /tmp/upstream-commit
+
+          echo "Upstream commit:"
+          echo "$UPSTREAM_COMMIT"
+
+          # Apply upstream files.
           git checkout FETCH_HEAD -- .
 
-          # Restore your custom configuration
-          cp /tmp/config.toml config.toml
+          # Restore Teddy's custom configuration.
+          cp /tmp/teddy-config.toml config.toml
+
+      # ------------------------------------------------------------
+      # 5. Verify Teddy's config was preserved
+      # ------------------------------------------------------------
+      - name: Verify custom configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! cmp -s config.toml /tmp/teddy-config.toml; then
+            echo "::error::Teddy's config.toml was changed unexpectedly"
+            exit 1
+          fi
+
+          echo "Teddy's config.toml preserved."
+
+      # ------------------------------------------------------------
+      # 6. Validate imported upstream code
+      # ------------------------------------------------------------
+      - name: Validate upstream code
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Validating upstream commit:"
+          cat /tmp/upstream-commit
+
+          # Required files.
+          required_files=(
+            "sync-hagezi.sh"
+            "config.toml"
+            ".github/workflows/sync.yml"
+          )
+
+          for file in "${required_files[@]}"; do
+            if [[ ! -f "$file" ]]; then
+              echo "::error::Required file missing: $file"
+              exit 1
+            fi
+          done
+
+          # Check Bash syntax.
+          echo "Checking sync-hagezi.sh syntax..."
+          bash -n sync-hagezi.sh
+          echo "Bash syntax OK."
+
+          # Check executable permission.
+          if [[ ! -x sync-hagezi.sh ]]; then
+            echo "::error::sync-hagezi.sh is not executable"
+            exit 1
+          fi
+
+          echo "Executable permission OK."
+
+          # Basic sync.yml sanity checks.
+          echo "Checking sync.yml..."
+
+          grep -q '^name:' .github/workflows/sync.yml || {
+            echo "::error::sync.yml does not contain a workflow name"
+            exit 1
+          }
+
+          grep -q 'sync-hagezi.sh' .github/workflows/sync.yml || {
+            echo "::error::sync.yml does not reference sync-hagezi.sh"
+            exit 1
+          }
+
+          echo "sync.yml validation OK."
+
+      # ------------------------------------------------------------
+      # 7. Show changes
+      # ------------------------------------------------------------
+      - name: Check synchronized tree
+        shell: bash
+        run: |
+          set -euo pipefail
 
           git add -A
 
@@ -49,8 +173,42 @@ jobs:
             exit 0
           fi
 
-          git commit -m "Sync with upstream"
+          echo "Files changed:"
+          git diff --cached --name-status
 
-      - name: Push changes
+          echo
+          echo "Change statistics:"
+          git diff --cached --stat
+
+      # ------------------------------------------------------------
+      # 8. Commit only when needed
+      # ------------------------------------------------------------
+      - name: Commit synchronization
+        shell: bash
         run: |
+          set -euo pipefail
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "Already up to date."
+            exit 0
+          fi
+
+          UPSTREAM_COMMIT="$(cat /tmp/upstream-commit)"
+
+          git commit \
+            -m "Sync with upstream" \
+            -m "Upstream commit: ${UPSTREAM_COMMIT}"
+
+      # ------------------------------------------------------------
+      # 9. Push to Teddy/main
+      # ------------------------------------------------------------
+      - name: Push synchronization
+        shell: bash
+        run: |
+          set -euo pipefail
+
           git push origin main
+
+          echo "Fork synchronization completed successfully."
