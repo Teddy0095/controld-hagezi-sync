@@ -23,18 +23,21 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Fetch upstream
+      - name: Fetch latest fork and upstream
         run: |
-          git remote add upstream https://github.com/0x11DFE/controld-hagezi-sync.git
-          git fetch upstream main
+          git fetch origin main
+          git fetch https://github.com/0x11DFE/controld-hagezi-sync.git main
 
       - name: Sync upstream changes
         run: |
+          # Start from the latest version of YOUR fork
+          git reset --hard origin/main
+
           # Save your custom configuration
           cp config.toml /tmp/config.toml
 
-          # Update everything else from upstream
-          git checkout upstream/main -- .
+          # Apply upstream files
+          git checkout FETCH_HEAD -- .
 
           # Restore your custom configuration
           cp /tmp/config.toml config.toml
