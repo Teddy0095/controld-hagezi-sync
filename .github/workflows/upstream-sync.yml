@@ -1,0 +1,270 @@
+name: Upstream Sync
+
+on:
+  schedule:
+    - cron: "30 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync upstream and create PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      UPSTREAM_URL: https://github.com/0x11DFE/controld-hagezi-sync.git
+      UPSTREAM_BRANCH: main
+      TARGET_BRANCH: main
+      SYNC_BRANCH: automation/upstream-sync
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Configure Git
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch repositories
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch --prune origin "$TARGET_BRANCH"
+          git fetch --prune "$UPSTREAM_URL" "$UPSTREAM_BRANCH"
+
+          FORK_COMMIT="$(git rev-parse "origin/$TARGET_BRANCH")"
+          UPSTREAM_COMMIT="$(git rev-parse FETCH_HEAD)"
+
+          [[ "$FORK_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$UPSTREAM_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+
+          printf '%s\n' "$FORK_COMMIT" > "$RUNNER_TEMP/fork-commit"
+          printf '%s\n' "$UPSTREAM_COMMIT" > "$RUNNER_TEMP/upstream-commit"
+
+          echo "Fork commit:     $FORK_COMMIT"
+          echo "Upstream commit: $UPSTREAM_COMMIT"
+
+      - name: Prepare sync tree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git reset --hard "origin/$TARGET_BRANCH"
+
+          if [[ ! -f config.toml ]]; then
+            echo "::error::config.toml does not exist"
+            exit 1
+          fi
+
+          cp -- config.toml "$RUNNER_TEMP/teddy-config.toml"
+          chmod 600 "$RUNNER_TEMP/teddy-config.toml"
+
+          if [[ ! -f .github/workflows/upstream-sync.yml ]]; then
+            echo "::error::upstream-sync.yml does not exist"
+            exit 1
+          fi
+
+          cp -- \
+            .github/workflows/upstream-sync.yml \
+            "$RUNNER_TEMP/upstream-sync.yml"
+
+          chmod 600 "$RUNNER_TEMP/upstream-sync.yml"
+
+      - name: Import upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          UPSTREAM_COMMIT="$(cat "$RUNNER_TEMP/upstream-commit")"
+
+          git read-tree --reset -u "$UPSTREAM_COMMIT"
+
+          cp -- \
+            "$RUNNER_TEMP/teddy-config.toml" \
+            config.toml
+
+          mkdir -p .github/workflows
+
+          cp -- \
+            "$RUNNER_TEMP/upstream-sync.yml" \
+            .github/workflows/upstream-sync.yml
+
+      - name: Verify protected files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! cmp -s \
+            config.toml \
+            "$RUNNER_TEMP/teddy-config.toml"; then
+            echo "::error::config.toml was changed"
+            exit 1
+          fi
+
+          if ! cmp -s \
+            .github/workflows/upstream-sync.yml \
+            "$RUNNER_TEMP/upstream-sync.yml"; then
+            echo "::error::upstream-sync.yml was changed"
+            exit 1
+          fi
+
+          echo "Protected files verified."
+
+      - name: Validate upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required_files=(
+            "sync-hagezi.sh"
+            "config.toml"
+            ".github/workflows/upstream-sync.yml"
+          )
+
+          for file in "${required_files[@]}"; do
+            if [[ ! -f "$file" ]]; then
+              echo "::error::Required file missing: $file"
+              exit 1
+            fi
+          done
+
+          bash -n sync-hagezi.sh
+
+          if [[ ! -x sync-hagezi.sh ]]; then
+            echo "::error::sync-hagezi.sh is not executable"
+            exit 1
+          fi
+
+          grep -q '^name:' \
+            .github/workflows/upstream-sync.yml
+
+          grep -q 'UPSTREAM_URL:' \
+            .github/workflows/upstream-sync.yml
+
+          echo "Validation passed."
+
+      - name: Check changes
+        id: changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No synchronization changes."
+            exit 0
+          fi
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+          echo "Files changed:"
+          git diff --cached --name-status
+
+      - name: Commit synchronization
+        if: steps.changes.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          UPSTREAM_COMMIT="$(cat "$RUNNER_TEMP/upstream-commit")"
+
+          git commit \
+            -m "Sync with upstream" \
+            -m "Upstream commit: ${UPSTREAM_COMMIT}"
+
+      - name: Push sync branch
+        if: steps.changes.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git push \
+            --force-with-lease \
+            origin \
+            "HEAD:${SYNC_BRANCH}"
+
+      - name: Create or update Pull Request
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EXISTING_PR="$(
+            gh pr list \
+              --base "$TARGET_BRANCH" \
+              --head "$SYNC_BRANCH" \
+              --state open \
+              --json number \
+              --jq '.[0].number // empty'
+          )"
+
+          PR_TITLE="Sync with upstream"
+
+          PR_BODY="$(
+            cat <<EOF
+          ## Upstream synchronization
+
+          This PR was created automatically by the upstream sync workflow.
+
+          **Upstream repository:** \`$UPSTREAM_URL\`
+
+          **Upstream commit:**
+          \`$(cat "$RUNNER_TEMP/upstream-commit")\`
+
+          ### Validation
+
+          - Required files checked
+          - Bash syntax checked
+          - sync-hagezi.sh executable permission checked
+          - Teddy's config.toml preserved
+          - upstream-sync.yml preserved
+          - Upstream code was not executed during synchronization
+
+          ### Review
+
+          Please review the changes before merging.
+          EOF
+          )"
+
+          if [[ -n "$EXISTING_PR" ]]; then
+            echo "Updating existing PR #$EXISTING_PR"
+
+            gh pr edit "$EXISTING_PR" \
+              --title "$PR_TITLE" \
+              --body "$PR_BODY"
+          else
+            echo "Creating new Pull Request"
+
+            gh pr create \
+              --base "$TARGET_BRANCH" \
+              --head "$SYNC_BRANCH" \
+              --title "$PR_TITLE" \
+              --body "$PR_BODY"
+          fi
+
+      - name: Synchronization complete
+        if: steps.changes.outputs.changed == 'false'
+        shell: bash
+        run: |
+          echo "Upstream and main are already synchronized."
