@@ -7,29 +7,46 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: upstream-fork-sync
   cancel-in-progress: false
 
+env:
+  UPSTREAM_REPO: https://github.com/0x11DFE/controld-hagezi-sync.git
+  UPSTREAM_BRANCH: main
+  BASE_BRANCH: main
+  SYNC_BRANCH: upstream-sync
+
+  # Maximum number of changed files allowed in one automatic sync.
+  MAX_CHANGED_FILES: "250"
+
+  # Maximum changed lines allowed in one automatic sync.
+  MAX_CHANGED_LINES: "20000"
+
 jobs:
   sync:
+    name: Check upstream and create PR
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
+
       # ------------------------------------------------------------
-      # 1. Checkout Teddy's fork
+      # Checkout Teddy repository
       # ------------------------------------------------------------
-      - name: Checkout fork
+
+      - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: true
 
       # ------------------------------------------------------------
-      # 2. Configure Git
+      # Git identity
       # ------------------------------------------------------------
+
       - name: Configure Git
         shell: bash
         run: |
@@ -40,87 +57,276 @@ jobs:
             "41898282+github-actions[bot]@users.noreply.github.com"
 
       # ------------------------------------------------------------
-      # 3. Fetch Teddy/main and upstream/main
+      # Fetch Teddy main and upstream.
+      #
+      # IMPORTANT:
+      # We fetch upstream into a named ref instead of relying on
+      # FETCH_HEAD later in the workflow.
       # ------------------------------------------------------------
+
       - name: Fetch repositories
         shell: bash
         run: |
           set -euo pipefail
 
-          git fetch --prune origin main
-          git fetch --prune \
-            https://github.com/0x11DFE/controld-hagezi-sync.git \
-            main
+          git fetch \
+            --prune \
+            --no-tags \
+            origin \
+            "refs/heads/${BASE_BRANCH}:refs/remotes/origin/${BASE_BRANCH}"
 
-          echo "Teddy/main:"
-          git rev-parse origin/main
+          git fetch \
+            --prune \
+            --no-tags \
+            "$UPSTREAM_REPO" \
+            "refs/heads/${UPSTREAM_BRANCH}:refs/remotes/upstream/${UPSTREAM_BRANCH}"
 
-          echo "Upstream/main:"
-          git rev-parse FETCH_HEAD
+          BASE_COMMIT="$(git rev-parse "origin/${BASE_BRANCH}")"
+          UPSTREAM_COMMIT="$(git rev-parse "refs/remotes/upstream/${UPSTREAM_BRANCH}")"
 
-      # ------------------------------------------------------------
-      # 4. Build the synchronized tree
-      # ------------------------------------------------------------
-      - name: Build synchronized tree
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # Always start from the latest Teddy/main.
-          git reset --hard origin/main
-
-          # Preserve Teddy's custom configuration.
-          if [[ ! -f config.toml ]]; then
-            echo "::error::config.toml does not exist"
-            exit 1
-          fi
-
-          cp config.toml /tmp/teddy-config.toml
-
-          # Record the exact upstream commit being imported.
-          UPSTREAM_COMMIT="$(git rev-parse FETCH_HEAD)"
+          printf '%s\n' "$BASE_COMMIT" > /tmp/base-commit
           printf '%s\n' "$UPSTREAM_COMMIT" > /tmp/upstream-commit
 
-          echo "Upstream commit:"
+          echo "Teddy ${BASE_BRANCH}:"
+          echo "$BASE_COMMIT"
+
+          echo
+          echo "Upstream ${UPSTREAM_BRANCH}:"
           echo "$UPSTREAM_COMMIT"
 
-          # Apply upstream files.
-          git checkout FETCH_HEAD -- .
-
-          # Restore Teddy's custom configuration.
-          cp /tmp/teddy-config.toml config.toml
-
       # ------------------------------------------------------------
-      # 5. Verify Teddy's config was preserved
+      # Verify the upstream repository is actually the expected
+      # repository.
       # ------------------------------------------------------------
-      - name: Verify custom configuration
+
+      - name: Verify upstream repository
         shell: bash
         run: |
           set -euo pipefail
 
-          if ! cmp -s config.toml /tmp/teddy-config.toml; then
-            echo "::error::Teddy's config.toml was changed unexpectedly"
+          EXPECTED_REPO="https://github.com/0x11DFE/controld-hagezi-sync.git"
+
+          if [[ "$UPSTREAM_REPO" != "$EXPECTED_REPO" ]]; then
+            echo "::error::Unexpected upstream repository:"
+            echo "$UPSTREAM_REPO"
             exit 1
           fi
 
-          echo "Teddy's config.toml preserved."
+          echo "Upstream repository verified."
 
       # ------------------------------------------------------------
-      # 6. Validate imported upstream code
+      # Verify protected files exist before importing anything.
       # ------------------------------------------------------------
-      - name: Validate upstream code
+
+      - name: Verify protected files
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Validating upstream commit:"
-          cat /tmp/upstream-commit
+          protected_files=(
+            "config.toml"
+            ".github/workflows/upstream-sync.yml"
+            ".github/workflows/sync.yml"
+          )
 
-          # Required files.
+          for file in "${protected_files[@]}"; do
+            if [[ ! -f "$file" ]]; then
+              echo "::error::Protected file missing: $file"
+              exit 1
+            fi
+          done
+
+          echo "Protected files verified."
+
+      # ------------------------------------------------------------
+      # Make sure the working tree starts exactly from Teddy main.
+      # ------------------------------------------------------------
+
+      - name: Prepare working tree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE_COMMIT="$(cat /tmp/base-commit)"
+
+          git reset --hard "$BASE_COMMIT"
+
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "::error::Working tree is not clean."
+            git status --short
+            exit 1
+          fi
+
+          echo "Working tree prepared from:"
+          echo "$BASE_COMMIT"
+
+      # ------------------------------------------------------------
+      # Import upstream while preserving Teddy-controlled files.
+      #
+      # This is deliberately NOT:
+      #
+      #   git checkout UPSTREAM -- .
+      #
+      # because that would leave stale files when upstream deletes
+      # something.
+      #
+      # Instead:
+      #   1. Remove files no longer present upstream.
+      #   2. Copy every upstream file.
+      #   3. Restore protected Teddy files.
+      # ------------------------------------------------------------
+
+      - name: Import upstream files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          UPSTREAM_COMMIT="$(cat /tmp/upstream-commit)"
+
+          protected_files=(
+            "config.toml"
+            ".github/workflows/upstream-sync.yml"
+            ".github/workflows/sync.yml"
+          )
+
+          is_protected() {
+            local candidate="$1"
+
+            for protected in "${protected_files[@]}"; do
+              if [[ "$candidate" == "$protected" ]]; then
+                return 0
+              fi
+            done
+
+            return 1
+          }
+
+          echo "Saving protected files..."
+
+          mkdir -p /tmp/teddy-protected/.github/workflows
+
+          cp config.toml \
+            /tmp/teddy-protected/config.toml
+
+          cp .github/workflows/upstream-sync.yml \
+            /tmp/teddy-protected/.github/workflows/upstream-sync.yml
+
+          cp .github/workflows/sync.yml \
+            /tmp/teddy-protected/.github/workflows/sync.yml
+
+          echo "Removing files deleted by upstream..."
+
+          while IFS= read -r file; do
+            [[ -z "$file" ]] && continue
+
+            if is_protected "$file"; then
+              continue
+            fi
+
+            if ! git cat-file -e \
+              "${UPSTREAM_COMMIT}:${file}" \
+              2>/dev/null; then
+
+              if git ls-files --error-unmatch "$file" >/dev/null 2>&1; then
+                echo "Removing upstream-deleted file: $file"
+                git rm -f -- "$file"
+              fi
+            fi
+          done < <(
+            git ls-tree \
+              -r \
+              --name-only \
+              "$BASE_COMMIT"
+          )
+
+          echo "Importing upstream files..."
+
+          while IFS= read -r file; do
+            [[ -z "$file" ]] && continue
+
+            if is_protected "$file"; then
+              echo "Protected: $file"
+              continue
+            fi
+
+            mkdir -p "$(dirname "$file")"
+
+            git checkout \
+              "$UPSTREAM_COMMIT" \
+              -- "$file"
+
+          done < <(
+            git ls-tree \
+              -r \
+              --name-only \
+              "$UPSTREAM_COMMIT"
+          )
+
+          echo "Restoring protected files..."
+
+          cp \
+            /tmp/teddy-protected/config.toml \
+            config.toml
+
+          cp \
+            /tmp/teddy-protected/.github/workflows/upstream-sync.yml \
+            .github/workflows/upstream-sync.yml
+
+          cp \
+            /tmp/teddy-protected/.github/workflows/sync.yml \
+            .github/workflows/sync.yml
+
+          echo "Upstream import complete."
+
+      # ------------------------------------------------------------
+      # Verify protected files byte-for-byte.
+      # ------------------------------------------------------------
+
+      - name: Verify protected files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! cmp -s \
+            config.toml \
+            /tmp/teddy-protected/config.toml; then
+
+            echo "::error::config.toml was modified."
+            exit 1
+          fi
+
+          if ! cmp -s \
+            .github/workflows/upstream-sync.yml \
+            /tmp/teddy-protected/.github/workflows/upstream-sync.yml; then
+
+            echo "::error::upstream-sync.yml was modified."
+            exit 1
+          fi
+
+          if ! cmp -s \
+            .github/workflows/sync.yml \
+            /tmp/teddy-protected/.github/workflows/sync.yml; then
+
+            echo "::error::sync.yml was modified."
+            exit 1
+          fi
+
+          echo "All protected files preserved."
+
+      # ------------------------------------------------------------
+      # Validate required files.
+      # ------------------------------------------------------------
+
+      - name: Validate required files
+        shell: bash
+        run: |
+          set -euo pipefail
+
           required_files=(
             "sync-hagezi.sh"
             "config.toml"
             ".github/workflows/sync.yml"
+            ".github/workflows/upstream-sync.yml"
           )
 
           for file in "${required_files[@]}"; do
@@ -130,38 +336,133 @@ jobs:
             fi
           done
 
-          # Check Bash syntax.
-          echo "Checking sync-hagezi.sh syntax..."
+          echo "Required files OK."
+
+      # ------------------------------------------------------------
+      # Bash validation.
+      # ------------------------------------------------------------
+
+      - name: Validate Bash
+        shell: bash
+        run: |
+          set -euo pipefail
+
           bash -n sync-hagezi.sh
+
           echo "Bash syntax OK."
 
-          # Check executable permission.
           if [[ ! -x sync-hagezi.sh ]]; then
-            echo "::error::sync-hagezi.sh is not executable"
+            echo "::error::sync-hagezi.sh is not executable."
             exit 1
           fi
 
           echo "Executable permission OK."
 
-          # Basic sync.yml sanity checks.
-          echo "Checking sync.yml..."
+      # ------------------------------------------------------------
+      # Basic workflow validation.
+      #
+      # We deliberately do not execute upstream code.
+      # ------------------------------------------------------------
 
-          grep -q '^name:' .github/workflows/sync.yml || {
-            echo "::error::sync.yml does not contain a workflow name"
-            exit 1
-          }
+      - name: Validate GitHub Actions workflows
+        shell: bash
+        run: |
+          set -euo pipefail
 
-          grep -q 'sync-hagezi.sh' .github/workflows/sync.yml || {
-            echo "::error::sync.yml does not reference sync-hagezi.sh"
-            exit 1
-          }
+          workflows=(
+            ".github/workflows/sync.yml"
+            ".github/workflows/upstream-sync.yml"
+          )
 
-          echo "sync.yml validation OK."
+          for workflow in "${workflows[@]}"; do
+            echo "Checking $workflow"
+
+            grep -q '^name:' "$workflow" || {
+              echo "::error::$workflow has no workflow name."
+              exit 1
+            }
+
+            grep -q '^on:' "$workflow" || {
+              echo "::error::$workflow has no on: declaration."
+              exit 1
+            }
+          done
+
+          grep -q 'sync-hagezi.sh' \
+            .github/workflows/sync.yml || {
+              echo "::error::sync.yml does not reference sync-hagezi.sh."
+              exit 1
+            }
+
+          echo "Workflow sanity checks passed."
 
       # ------------------------------------------------------------
-      # 7. Show changes
+      # Look for obvious hard-coded Control D tokens.
+      #
+      # We intentionally inspect sync.yml too, but references such
+      # as ${{ secrets.CONTROLD_API_TOKEN }} are not assignments.
       # ------------------------------------------------------------
-      - name: Check synchronized tree
+
+      - name: Check for hard-coded Control D token
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if grep -RniE \
+            --exclude-dir=.git \
+            --exclude='upstream-sync.yml' \
+            'CONTROLD_API_TOKEN[[:space:]]*=' \
+            .; then
+
+            echo "::error::Possible hard-coded Control D token detected."
+            exit 1
+          fi
+
+          echo "No obvious hard-coded Control D token detected."
+
+      # ------------------------------------------------------------
+      # Check for suspicious credential patterns.
+      # ------------------------------------------------------------
+
+      - name: Check for obvious credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if grep -RniE \
+            --exclude-dir=.git \
+            --exclude='upstream-sync.yml' \
+            --exclude='config.toml' \
+            'ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}' \
+            .; then
+
+            echo "::error::Possible hard-coded credential detected."
+            exit 1
+          fi
+
+          echo "No obvious credential patterns detected."
+
+      # ------------------------------------------------------------
+      # Git integrity checks.
+      # ------------------------------------------------------------
+
+      - name: Check Git diff
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git add -A
+
+          git diff --cached --check
+
+          echo "Git whitespace check passed."
+
+      # ------------------------------------------------------------
+      # Show exactly what changed.
+      # ------------------------------------------------------------
+
+      - name: Check for changes
+        id: changes
         shell: bash
         run: |
           set -euo pipefail
@@ -169,46 +470,316 @@ jobs:
           git add -A
 
           if git diff --cached --quiet; then
-            echo "Already up to date."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Already synchronized."
             exit 0
           fi
 
-          echo "Files changed:"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+          echo
+          echo "Changed files:"
           git diff --cached --name-status
 
           echo
-          echo "Change statistics:"
+          echo "Statistics:"
           git diff --cached --stat
 
       # ------------------------------------------------------------
-      # 8. Commit only when needed
+      # Guard against unexpectedly huge upstream changes.
       # ------------------------------------------------------------
-      - name: Commit synchronization
+
+      - name: Check change size
+        if: steps.changes.outputs.changed == 'true'
         shell: bash
         run: |
           set -euo pipefail
 
-          git add -A
+          FILE_COUNT="$(
+            git diff \
+              --cached \
+              --name-only \
+              | wc -l
+          )"
 
-          if git diff --cached --quiet; then
-            echo "Already up to date."
-            exit 0
+          INSERTIONS="$(
+            git diff \
+              --cached \
+              --numstat \
+              | awk '
+                  $1 ~ /^[0-9]+$/ { sum += $1 }
+                  END { print sum + 0 }
+                '
+          )"
+
+          DELETIONS="$(
+            git diff \
+              --cached \
+              --numstat \
+              | awk '
+                  $2 ~ /^[0-9]+$/ { sum += $2 }
+                  END { print sum + 0 }
+                '
+          )"
+
+          TOTAL_LINES=$((INSERTIONS + DELETIONS))
+
+          echo "Changed files: $FILE_COUNT"
+          echo "Inserted lines: $INSERTIONS"
+          echo "Deleted lines: $DELETIONS"
+          echo "Total changed lines: $TOTAL_LINES"
+
+          if (( FILE_COUNT > MAX_CHANGED_FILES )); then
+            echo "::error::Too many changed files."
+            echo "::error::Limit: $MAX_CHANGED_FILES"
+            exit 1
           fi
+
+          if (( TOTAL_LINES > MAX_CHANGED_LINES )); then
+            echo "::error::Too many changed lines."
+            echo "::error::Limit: $MAX_CHANGED_LINES"
+            exit 1
+          fi
+
+          echo "Change size within limits."
+
+      # ------------------------------------------------------------
+      # Detect workflow changes.
+      # ------------------------------------------------------------
+
+      - name: Detect workflow changes
+        if: steps.changes.outputs.changed == 'true'
+        id: workflow_changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git diff --cached --name-only \
+            | grep -E '^\.github/workflows/.*\.(yml|yaml)$' \
+            | grep -q .; then
+
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+
+            echo "Workflow files changed."
+
+            git diff \
+              --cached \
+              --name-status \
+              -- .github/workflows/
+
+          else
+
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+
+            echo "No workflow files changed."
+
+          fi
+
+      # ------------------------------------------------------------
+      # Detect protected-file attempts.
+      #
+      # This should normally be impossible because they are restored,
+      # but fail closed if anything somehow gets staged.
+      # ------------------------------------------------------------
+
+      - name: Verify protected files are unchanged
+        if: steps.changes.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          protected_files=(
+            "config.toml"
+            ".github/workflows/upstream-sync.yml"
+            ".github/workflows/sync.yml"
+          )
+
+          for file in "${protected_files[@]}"; do
+            if ! git diff \
+              --cached \
+              --quiet \
+              -- "$file"; then
+
+              echo "::error::Protected file appears in synchronization diff:"
+              echo "$file"
+              exit 1
+            fi
+          done
+
+          echo "No protected files changed."
+
+      # ------------------------------------------------------------
+      # Create synchronization branch from Teddy main.
+      # ------------------------------------------------------------
+
+      - name: Create synchronization branch
+        if: steps.changes.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE_COMMIT="$(cat /tmp/base-commit)"
+
+          git checkout -B \
+            "$SYNC_BRANCH" \
+            "$BASE_COMMIT"
+
+      # ------------------------------------------------------------
+      # Commit.
+      # ------------------------------------------------------------
+
+      - name: Commit synchronization
+        if: steps.changes.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
 
           UPSTREAM_COMMIT="$(cat /tmp/upstream-commit)"
 
           git commit \
-            -m "Sync with upstream" \
+            -m "chore: sync with upstream" \
             -m "Upstream commit: ${UPSTREAM_COMMIT}"
 
       # ------------------------------------------------------------
-      # 9. Push to Teddy/main
+      # Push only the synchronization branch.
       # ------------------------------------------------------------
-      - name: Push synchronization
+
+      - name: Push synchronization branch
+        if: steps.changes.outputs.changed == 'true'
         shell: bash
         run: |
           set -euo pipefail
 
-          git push origin main
+          git push \
+            --force-with-lease \
+            origin \
+            "$SYNC_BRANCH"
 
-          echo "Fork synchronization completed successfully."
+          echo "Synchronization branch pushed:"
+          echo "$SYNC_BRANCH"
+
+      # ------------------------------------------------------------
+      # Create/update PR.
+      # ------------------------------------------------------------
+
+      - name: Create or update Pull Request
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          UPSTREAM_COMMIT="$(cat /tmp/upstream-commit)"
+
+          if [[ \
+            "${{ steps.workflow_changes.outputs.changed }}" \
+            == "true"
+          ]]; then
+
+            WORKFLOW_WARNING="⚠️ Workflow files changed. Review every workflow change carefully before merging."
+
+          else
+
+            WORKFLOW_WARNING="No GitHub Actions workflow files changed."
+
+          fi
+
+          PR_TITLE="chore: sync with upstream"
+
+          PR_BODY="$(cat <<EOF
+## Upstream synchronization
+
+This PR synchronizes Teddy's repository with:
+
+**0x11DFE/controld-hagezi-sync**
+
+### Upstream commit
+
+\`${UPSTREAM_COMMIT}\`
+
+### Validation
+
+- [x] Exact upstream commit recorded
+- [x] Upstream repository verified
+- [x] Required files checked
+- [x] Bash syntax checked
+- [x] Executable permission checked
+- [x] GitHub Actions sanity checks passed
+- [x] Git whitespace checked
+- [x] Protected files preserved
+- [x] Protected files verified unchanged
+- [x] Credential pattern scan completed
+- [x] Change-size limits checked
+- [x] Upstream script was NOT executed
+- [x] Changes isolated to a Pull Request
+- [x] main was NOT modified automatically
+
+### Workflow changes
+
+${WORKFLOW_WARNING}
+
+### Protected files
+
+The following Teddy-controlled files are never imported from upstream:
+
+- \`config.toml\`
+- \`.github/workflows/upstream-sync.yml\`
+- \`.github/workflows/sync.yml\`
+
+### Security
+
+The upstream synchronization workflow does not receive
+\`CONTROLD_API_TOKEN\`.
+
+The production synchronization workflow remains protected
+from upstream replacement.
+
+### Review
+
+Please review the complete diff before merging.
+
+Pay particular attention to:
+
+- GitHub Actions changes
+- shell commands
+- network destinations
+- secret handling
+- executable files
+- changes to \`sync-hagezi.sh\`
+- unexpected new files
+- deleted files
+
+EOF
+)"
+
+          EXISTING_PR="$(
+            gh pr list \
+              --head "$SYNC_BRANCH" \
+              --base "$BASE_BRANCH" \
+              --state open \
+              --json number \
+              --jq '.[0].number // empty'
+          )"
+
+          if [[ -n "$EXISTING_PR" ]]; then
+
+            echo "Updating PR #$EXISTING_PR"
+
+            gh pr edit "$EXISTING_PR" \
+              --title "$PR_TITLE" \
+              --body "$PR_BODY"
+
+          else
+
+            echo "Creating new Pull Request"
+
+            gh pr create \
+              --base "$BASE_BRANCH" \
+              --head "$SYNC_BRANCH" \
+              --title "$PR_TITLE" \
+              --body "$PR_BODY"
+
+          fi
+
+          echo "Pull Request ready for review."
