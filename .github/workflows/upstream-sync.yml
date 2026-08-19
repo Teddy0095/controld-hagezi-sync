@@ -127,12 +127,19 @@ jobs:
 
           EXPECTED_URL="https://github.com/${UPSTREAM_OWNER}/${UPSTREAM_REPOSITORY}.git"
 
-          if [[ "$UPSTREAM_URL" != "$EXPECTED_URL" ]]; then
+          # Normalize the configured URL.
+          # This accepts the exact HTTPS URL with or without a trailing slash.
+          NORMALIZED_URL="${UPSTREAM_URL%/}"
+
+          # Reject anything except the exact trusted GitHub repository.
+          if [[ "$NORMALIZED_URL" != "$EXPECTED_URL" ]]; then
             echo "::error::Configured upstream URL does not match trusted identity"
+            echo "::error::Expected: $EXPECTED_URL"
+            echo "::error::Configured: $UPSTREAM_URL"
             exit 1
           fi
 
-          if [[ "$UPSTREAM_URL" != https://github.com/*.git ]]; then
+          if [[ "$NORMALIZED_URL" != https://github.com/*.git ]]; then
             echo "::error::Upstream URL must be an HTTPS GitHub repository URL"
             exit 1
           fi
@@ -156,7 +163,7 @@ jobs:
           echo "  owner:  ${UPSTREAM_OWNER}"
           echo "  repo:   ${UPSTREAM_REPOSITORY}"
           echo "  branch: ${UPSTREAM_BRANCH}"
-          echo "  url:    ${UPSTREAM_URL}"
+          echo "  url:    ${NORMALIZED_URL}"
 
           echo "✅ Upstream identity verified."
 
