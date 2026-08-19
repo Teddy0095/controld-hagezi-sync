@@ -14,19 +14,19 @@ on:
 # UPSTREAM IS UNTRUSTED DATA.
 #
 # This workflow:
-#   1. verifies the explicitly trusted upstream identity
+#   1. checks the exact trusted upstream URL
 #   2. fetches the trusted fork
 #   3. fetches the pinned upstream branch
 #   4. pins the exact upstream commit + tree
 #   5. preserves fork-owned files
 #   6. imports the exact upstream Git tree
 #   7. restores fork-owned files
-#   8. verifies every non-protected path against upstream
+#   8. verifies all non-protected paths against upstream
 #   9. performs static validation only
 #  10. creates/updates a review PR
 #
 # This workflow NEVER:
-#   - executes upstream scripts
+#   - executes sync-hagezi.sh
 #   - sources upstream shell code
 #   - runs upstream tests
 #   - runs upstream builds
@@ -53,8 +53,6 @@ env:
   # TRUSTED UPSTREAM
   # ==========================================================================
 
-  UPSTREAM_OWNER: 0x11DFE
-  UPSTREAM_REPOSITORY: controld-hagezi-sync
   UPSTREAM_URL: https://github.com/0x11DFE/controld-hagezi-sync.git
   UPSTREAM_BRANCH: main
 
@@ -89,7 +87,7 @@ jobs:
     steps:
 
       # ======================================================================
-      # 1. CHECKOUT TRUSTED FORK
+      # 1. CHECKOUT FORK
       # ======================================================================
 
       - name: 📥 Checkout trusted fork
@@ -101,6 +99,10 @@ jobs:
           clean: true
           submodules: false
           lfs: false
+
+      # ======================================================================
+      # 2. CONFIGURE GIT
+      # ======================================================================
 
       - name: ⚙️ Configure Git
         run: |
@@ -115,55 +117,32 @@ jobs:
           git config --local advice.detachedHead false
           git config --local credential.helper ""
 
-          echo "✅ Git environment configured."
+          echo "✅ Git configured."
 
       # ======================================================================
-      # 2. VERIFY UPSTREAM IDENTITY
+      # 3. VERIFY TRUSTED UPSTREAM
       # ======================================================================
 
-      - name: 🔐 Verify upstream identity
+      - name: 🔐 Verify trusted upstream
         run: |
           set -euo pipefail
 
-          echo "=========================================="
-          echo "UPSTREAM IDENTITY CHECK"
-          echo "=========================================="
-
-          echo "UPSTREAM_OWNER=[$UPSTREAM_OWNER]"
-          echo "UPSTREAM_REPOSITORY=[$UPSTREAM_REPOSITORY]"
-          echo "UPSTREAM_URL=[$UPSTREAM_URL]"
-          echo "UPSTREAM_BRANCH=[$UPSTREAM_BRANCH]"
-
-          EXPECTED_URL="https://github.com/${UPSTREAM_OWNER}/${UPSTREAM_REPOSITORY}.git"
+          EXPECTED_UPSTREAM_URL="https://github.com/0x11DFE/controld-hagezi-sync.git"
           NORMALIZED_URL="${UPSTREAM_URL%/}"
 
-          echo
-          echo "EXPECTED_URL=[$EXPECTED_URL]"
-          echo "NORMALIZED_URL=[$NORMALIZED_URL]"
-          echo
+          echo "=========================================="
+          echo "VERIFYING TRUSTED UPSTREAM"
+          echo "=========================================="
+          echo "Configured URL: [$UPSTREAM_URL]"
+          echo "Normalized URL: [$NORMALIZED_URL]"
+          echo "Expected URL:   [$EXPECTED_UPSTREAM_URL]"
+          echo "Branch:         [$UPSTREAM_BRANCH]"
+          echo "=========================================="
 
-          # Exact identity check.
-          if [[ "$NORMALIZED_URL" != "$EXPECTED_URL" ]]; then
-            echo "::error::Configured upstream URL does not match trusted identity"
-            echo "::error::Expected: $EXPECTED_URL"
-            echo "::error::Configured: $NORMALIZED_URL"
-            exit 1
-          fi
-
-          # URL must be HTTPS GitHub.
-          if [[ "$NORMALIZED_URL" != https://github.com/*.git ]]; then
-            echo "::error::Upstream URL must be an HTTPS GitHub repository URL"
-            exit 1
-          fi
-
-          # Prevent shell metacharacters / unexpected values.
-          if [[ ! "$UPSTREAM_OWNER" =~ ^[A-Za-z0-9._-]+$ ]]; then
-            echo "::error::Invalid upstream owner"
-            exit 1
-          fi
-
-          if [[ ! "$UPSTREAM_REPOSITORY" =~ ^[A-Za-z0-9._-]+$ ]]; then
-            echo "::error::Invalid upstream repository"
+          if [[ "$NORMALIZED_URL" != "$EXPECTED_UPSTREAM_URL" ]]; then
+            echo "::error::Configured upstream URL does not match trusted repository"
+            echo "::error::Expected: $EXPECTED_UPSTREAM_URL"
+            echo "::error::Configured: $UPSTREAM_URL"
             exit 1
           fi
 
@@ -172,17 +151,15 @@ jobs:
             exit 1
           fi
 
-          echo "Trusted upstream:"
-          echo "  owner:  $UPSTREAM_OWNER"
-          echo "  repo:   $UPSTREAM_REPOSITORY"
-          echo "  branch: $UPSTREAM_BRANCH"
-          echo "  url:    $NORMALIZED_URL"
+          if [[ "$NORMALIZED_URL" != https://github.com/*.git ]]; then
+            echo "::error::Upstream URL must be an HTTPS GitHub repository URL"
+            exit 1
+          fi
 
-          echo
-          echo "✅ Upstream identity verified."
+          echo "✅ Trusted upstream verified."
 
       # ======================================================================
-      # 3. FETCH AND PIN EXACT REVISIONS
+      # 4. FETCH AND PIN EXACT COMMITS
       # ======================================================================
 
       - name: 🌐 Fetch and pin revisions
@@ -192,9 +169,9 @@ jobs:
           FORK_REF="refs/remotes/origin/${TARGET_BRANCH}"
           UPSTREAM_REF="refs/remotes/upstream/${UPSTREAM_BRANCH}"
 
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🌐 Fetching trusted fork"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Fetching fork"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
           git fetch \
             --no-tags \
@@ -202,10 +179,9 @@ jobs:
             origin \
             "refs/heads/${TARGET_BRANCH}:${FORK_REF}"
 
-          echo
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🌐 Fetching upstream"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "Fetching upstream"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
           git fetch \
             --no-tags \
@@ -227,17 +203,14 @@ jobs:
           }
 
           [[ "$(git cat-file -t "$FORK_COMMIT")" == "commit" ]] || {
-            echo "::error::Fork reference is not a commit"
+            echo "::error::Fork object is not a commit"
             exit 1
           }
 
           [[ "$(git cat-file -t "$UPSTREAM_COMMIT")" == "commit" ]] || {
-            echo "::error::Upstream reference is not a commit"
+            echo "::error::Upstream object is not a commit"
             exit 1
           }
-
-          git cat-file -e "${FORK_COMMIT}^{commit}"
-          git cat-file -e "${UPSTREAM_COMMIT}^{commit}"
 
           UPSTREAM_TREE="$(git rev-parse "${UPSTREAM_COMMIT}^{tree}")"
 
@@ -247,7 +220,7 @@ jobs:
           }
 
           [[ "$(git cat-file -t "$UPSTREAM_TREE")" == "tree" ]] || {
-            echo "::error::Upstream tree object is not a tree"
+            echo "::error::Upstream tree is not a tree object"
             exit 1
           }
 
@@ -261,22 +234,14 @@ jobs:
             > "$RUNNER_TEMP/upstream-tree"
 
           echo
-          echo "🏠 Fork commit:"
-          echo "   $FORK_COMMIT"
-
-          echo
-          echo "🌐 Upstream commit:"
-          echo "   $UPSTREAM_COMMIT"
-
-          echo
-          echo "🌳 Upstream tree:"
-          echo "   $UPSTREAM_TREE"
-
+          echo "Fork commit:     $FORK_COMMIT"
+          echo "Upstream commit: $UPSTREAM_COMMIT"
+          echo "Upstream tree:   $UPSTREAM_TREE"
           echo
           echo "✅ Exact revisions pinned."
 
       # ======================================================================
-      # 4. RESET WORKSPACE
+      # 5. RESET TO FORK
       # ======================================================================
 
       - name: 🧹 Reset workspace
@@ -288,18 +253,18 @@ jobs:
           git reset --hard "$FORK_COMMIT"
           git clean -ffdx
 
-          if [[ "$(git rev-parse HEAD)" != "$FORK_COMMIT" ]]; then
-            echo "::error::Workspace does not match trusted fork"
+          [[ "$(git rev-parse HEAD)" == "$FORK_COMMIT" ]] || {
+            echo "::error::Workspace does not match fork commit"
             exit 1
-          fi
+          }
 
           echo "✅ Workspace matches trusted fork."
 
       # ======================================================================
-      # 5. SAVE FORK-OWNED FILES
+      # 6. SAVE FORK-OWNED FILES
       # ======================================================================
 
-      - name: 🛡️ Save fork-owned files
+      - name: 🛡️ Save protected fork files
         run: |
           set -euo pipefail
 
@@ -308,37 +273,49 @@ jobs:
           rm -rf -- "$PROTECTED_DIR"
           mkdir -p -- "$PROTECTED_DIR"
 
+          # ------------------------------------------------------------------
+          # Validate directories.
+          # ------------------------------------------------------------------
+
           for dir in \
             ".github" \
             ".github/workflows"; do
 
-            if [[ -L "$dir" ]]; then
+            [[ -d "$dir" ]] || {
+              echo "::error::Protected directory missing: $dir"
+              exit 1
+            }
+
+            [[ ! -L "$dir" ]] || {
               echo "::error::Protected directory is a symlink: $dir"
               exit 1
-            fi
-
-            if [[ ! -d "$dir" ]]; then
-              echo "::error::Protected directory is missing: $dir"
-              exit 1
-            fi
+            }
 
           done
+
+          # ------------------------------------------------------------------
+          # Validate files.
+          # ------------------------------------------------------------------
 
           for file in \
             "$PROTECTED_CONFIG" \
             "$PROTECTED_WORKFLOW"; do
 
-            if [[ -L "$file" ]]; then
-              echo "::error::Protected path is a symlink: $file"
+            [[ -f "$file" ]] || {
+              echo "::error::Protected file missing: $file"
               exit 1
-            fi
+            }
 
-            if [[ ! -f "$file" ]]; then
-              echo "::error::Protected file is missing: $file"
+            [[ ! -L "$file" ]] || {
+              echo "::error::Protected file is a symlink: $file"
               exit 1
-            fi
+            }
 
           done
+
+          # ------------------------------------------------------------------
+          # Validate Git modes.
+          # ------------------------------------------------------------------
 
           for file in \
             "$PROTECTED_CONFIG" \
@@ -349,12 +326,16 @@ jobs:
                 awk '{print $1}'
             )"
 
-            if [[ "$MODE" != "100644" ]]; then
+            [[ "$MODE" == "100644" ]] || {
               echo "::error::Unexpected Git mode for $file: $MODE"
               exit 1
-            fi
+            }
 
           done
+
+          # ------------------------------------------------------------------
+          # Copy outside workspace.
+          # ------------------------------------------------------------------
 
           install -m 600 \
             "$PROTECTED_CONFIG" \
@@ -364,10 +345,10 @@ jobs:
             "$PROTECTED_WORKFLOW" \
             "$PROTECTED_DIR/upstream-sync.yml"
 
-          echo "✅ Fork-owned files saved."
+          echo "✅ Protected files saved."
 
       # ======================================================================
-      # 6. INSPECT UPSTREAM PROTECTED PATHS
+      # 7. INSPECT UPSTREAM PROTECTED PATHS
       # ======================================================================
 
       - name: 🔎 Inspect upstream protected paths
@@ -381,36 +362,40 @@ jobs:
             "$PROTECTED_WORKFLOW"; do
 
             ENTRY="$(
-              git ls-tree -r --full-tree "$UPSTREAM_COMMIT" -- "$file"
+              git ls-tree \
+                -r \
+                --full-tree \
+                "$UPSTREAM_COMMIT" \
+                -- "$file"
             )"
 
             if [[ -z "$ENTRY" ]]; then
-              echo "ℹ️ Upstream does not contain protected path: $file"
+              echo "ℹ️ Upstream does not contain: $file"
               continue
             fi
 
             echo "Upstream entry:"
-            echo "  $ENTRY"
+            echo "$ENTRY"
 
             MODE="$(awk '{print $1}' <<< "$ENTRY")"
             TYPE="$(awk '{print $2}' <<< "$ENTRY")"
 
-            if [[ "$TYPE" != "blob" ]]; then
-              echo "::error::Upstream protected path is not a regular blob: $file"
+            [[ "$TYPE" == "blob" ]] || {
+              echo "::error::Upstream protected path is not a blob: $file"
               exit 1
-            fi
+            }
 
-            if [[ "$MODE" != "100644" && "$MODE" != "100755" ]]; then
-              echo "::error::Unexpected upstream Git mode for $file: $MODE"
+            [[ "$MODE" == "100644" || "$MODE" == "100755" ]] || {
+              echo "::error::Unexpected upstream mode for $file: $MODE"
               exit 1
-            fi
+            }
 
           done
 
           echo "✅ Upstream protected paths inspected."
 
       # ======================================================================
-      # 7. IMPORT EXACT UPSTREAM TREE
+      # 8. IMPORT EXACT UPSTREAM TREE
       # ======================================================================
 
       - name: 📦 Import exact upstream tree
@@ -420,10 +405,20 @@ jobs:
           UPSTREAM_COMMIT="$(cat "$RUNNER_TEMP/upstream-commit")"
           PROTECTED_DIR="$RUNNER_TEMP/upstream-sync-protected"
 
+          echo "Importing upstream commit:"
+          echo "$UPSTREAM_COMMIT"
+
+          # This changes Git state.
+          # It does NOT execute imported files.
+
           git read-tree \
             --reset \
             -u \
             "$UPSTREAM_COMMIT"
+
+          # ------------------------------------------------------------------
+          # Reject structural replacement of protected paths.
+          # ------------------------------------------------------------------
 
           if [[ -d "$PROTECTED_CONFIG" && ! -L "$PROTECTED_CONFIG" ]]; then
             echo "::error::Upstream replaced config.toml with a directory"
@@ -435,18 +430,26 @@ jobs:
             exit 1
           fi
 
+          # ------------------------------------------------------------------
+          # Remove upstream versions.
+          # ------------------------------------------------------------------
+
           rm -f -- "$PROTECTED_CONFIG"
           rm -f -- "$PROTECTED_WORKFLOW"
+
+          # ------------------------------------------------------------------
+          # Verify GitHub Actions structure.
+          # ------------------------------------------------------------------
 
           if [[ -e ".github" && ! -d ".github" ]]; then
             echo "::error::.github is not a directory"
             exit 1
           fi
 
-          if [[ -L ".github" ]]; then
+          [[ ! -L ".github" ]] || {
             echo "::error::.github is a symlink"
             exit 1
-          fi
+          }
 
           if [[ -e ".github/workflows" &&
                 ! -d ".github/workflows" ]]; then
@@ -454,12 +457,16 @@ jobs:
             exit 1
           fi
 
-          if [[ -L ".github/workflows" ]]; then
+          [[ ! -L ".github/workflows" ]] || {
             echo "::error::.github/workflows is a symlink"
             exit 1
-          fi
+          }
 
           mkdir -p -- ".github/workflows"
+
+          # ------------------------------------------------------------------
+          # Restore fork-owned files.
+          # ------------------------------------------------------------------
 
           install -m 600 \
             "$PROTECTED_DIR/config.toml" \
@@ -467,13 +474,13 @@ jobs:
 
           install -m 600 \
             "$PROTECTED_DIR/upstream-sync.yml" \
-            "$PROTECTED_WORKFLOW"
+            "$PROTECTED_WORKFLOW
 
           echo "✅ Upstream tree imported."
-          echo "✅ Fork-owned files restored."
+          echo "✅ Protected files restored."
 
       # ======================================================================
-      # 8. VERIFY PROTECTED FILES
+      # 9. VERIFY PROTECTED FILES
       # ======================================================================
 
       - name: 🔐 Verify protected files
@@ -482,23 +489,12 @@ jobs:
 
           PROTECTED_DIR="$RUNNER_TEMP/upstream-sync-protected"
 
-          for dir in \
-            ".github" \
-            ".github/workflows"; do
-
-            [[ -d "$dir" && ! -L "$dir" ]] || {
-              echo "::error::Invalid protected directory: $dir"
-              exit 1
-            }
-
-          done
-
           for file in \
             "$PROTECTED_CONFIG" \
             "$PROTECTED_WORKFLOW"; do
 
             [[ -f "$file" && ! -L "$file" ]] || {
-              echo "::error::Invalid protected file: $file"
+              echo "::error::Protected file invalid: $file"
               exit 1
             }
 
@@ -521,33 +517,7 @@ jobs:
           echo "✅ Protected files verified byte-for-byte."
 
       # ======================================================================
-      # 9. VERIFY PROTECTED GIT MODES
-      # ======================================================================
-
-      - name: 🔒 Verify protected Git modes
-        run: |
-          set -euo pipefail
-
-          for file in \
-            "$PROTECTED_CONFIG" \
-            "$PROTECTED_WORKFLOW"; do
-
-            MODE="$(
-              git ls-files --stage -- "$file" |
-                awk '{print $1}'
-            )"
-
-            if [[ "$MODE" != "100644" ]]; then
-              echo "::error::Unexpected Git mode for $file: $MODE"
-              exit 1
-            fi
-
-          done
-
-          echo "✅ Protected Git modes are 100644."
-
-      # ======================================================================
-      # 10. BLOCK UPSTREAM GITHUB ACTIONS
+      # 10. VERIFY ONLY OUR WORKFLOW EXISTS
       # ======================================================================
 
       - name: 🧱 Verify GitHub Actions boundary
@@ -595,7 +565,7 @@ jobs:
           fi
 
           [[ -f "$WORKFLOW_DIR/$EXPECTED" ]] || {
-            echo "::error::Protected workflow is missing"
+            echo "::error::Protected workflow missing"
             exit 1
           }
 
@@ -608,7 +578,7 @@ jobs:
           echo "✅ No upstream workflows survived."
 
       # ======================================================================
-      # 11. VERIFY FINAL TREE AGAINST UPSTREAM
+      # 11. VERIFY NON-PROTECTED TREE
       # ======================================================================
 
       - name: 🧬 Verify final tree against upstream
@@ -620,6 +590,10 @@ jobs:
           UPSTREAM_LIST="$RUNNER_TEMP/upstream-tree-list"
           FINAL_LIST="$RUNNER_TEMP/final-tree-list"
 
+          # ------------------------------------------------------------------
+          # Upstream tree, excluding fork-owned files.
+          # ------------------------------------------------------------------
+
           git ls-tree \
             -r \
             --full-tree \
@@ -627,6 +601,7 @@ jobs:
             awk '
               {
                 path = $4
+
                 if (
                   path != "config.toml" &&
                   path != ".github/workflows/upstream-sync.yml"
@@ -635,7 +610,12 @@ jobs:
                 }
               }
             ' |
-            sort > "$UPSTREAM_LIST"
+            sort \
+            > "$UPSTREAM_LIST"
+
+          # ------------------------------------------------------------------
+          # Final Git index, excluding fork-owned files.
+          # ------------------------------------------------------------------
 
           git ls-files \
             --stage |
@@ -650,20 +630,25 @@ jobs:
                   path != ".github/workflows/upstream-sync.yml"
                 ) {
                   type = (mode == "160000" ? "commit" : "blob")
+
                   print mode " " type " " object "\t" path
                 }
               }
             ' |
-            sort > "$FINAL_LIST"
+            sort \
+            > "$FINAL_LIST"
 
           if ! cmp -s "$UPSTREAM_LIST" "$FINAL_LIST"; then
-            echo "::error::Final non-protected tree does not exactly match upstream"
+            echo "::error::Final non-protected tree does not match upstream"
+
             echo
+            echo "Differences:"
             diff -u "$UPSTREAM_LIST" "$FINAL_LIST" || true
+
             exit 1
           fi
 
-          echo "✅ Every non-protected Git path exactly matches upstream."
+          echo "✅ Every non-protected Git path matches upstream."
 
       # ======================================================================
       # 12. STATIC VALIDATION ONLY
@@ -681,14 +666,17 @@ jobs:
           }
 
           [[ ! -L "$FILE" ]] || {
-            echo "::error::$FILE is a symlink"
+            echo "::error::sync-hagezi.sh is a symlink"
             exit 1
           }
 
-          [[ "$(git ls-files --error-unmatch "$FILE" 2>/dev/null)" == "$FILE" ]] || {
-            echo "::error::$FILE is not tracked"
-            exit 1
-          }
+          git ls-files \
+            --error-unmatch \
+            "$FILE" \
+            >/dev/null 2>&1 || {
+              echo "::error::sync-hagezi.sh is not tracked"
+              exit 1
+            }
 
           MODE="$(
             git ls-files --stage -- "$FILE" |
@@ -696,18 +684,18 @@ jobs:
           )"
 
           [[ "$MODE" == "100755" ]] || {
-            echo "::error::$FILE must have Git mode 100755, got $MODE"
+            echo "::error::sync-hagezi.sh must be 100755, got $MODE"
             exit 1
           }
 
-          echo "🔍 Running Bash syntax check..."
+          echo "Running Bash syntax check..."
 
-          # bash -n parses only.
-          # It does NOT execute the script.
+          # bash -n ONLY parses.
+          # It does not execute the script.
 
           bash -n "$FILE"
 
-          echo "✅ Static validation passed."
+          echo "✅ Bash syntax check passed."
           echo "ℹ️ Upstream code was NOT executed."
 
       # ======================================================================
@@ -727,7 +715,8 @@ jobs:
             exit 1
           fi
 
-          git ls-files --error-unmatch \
+          git ls-files \
+            --error-unmatch \
             "$PROTECTED_CONFIG" \
             "$PROTECTED_WORKFLOW" \
             >/dev/null
@@ -745,21 +734,20 @@ jobs:
             -- .
 
           echo
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🔎 Final verification"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "FINAL VERIFICATION"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo
-          echo "🏠 Fork commit:"
-          echo "   $FORK_COMMIT"
+          echo "Fork commit:"
+          echo "  $FORK_COMMIT"
           echo
-          echo "🌐 Upstream commit:"
-          echo "   $UPSTREAM_COMMIT"
+          echo "Upstream commit:"
+          echo "  $UPSTREAM_COMMIT"
           echo
-          echo "🌳 Upstream tree:"
-          echo "   $EXPECTED_TREE"
+          echo "Upstream tree:"
+          echo "  $EXPECTED_TREE"
           echo
-          echo "🛡️ Protected files:"
-
+          echo "Protected files:"
           git ls-files \
             "$PROTECTED_CONFIG" \
             "$PROTECTED_WORKFLOW"
@@ -768,7 +756,7 @@ jobs:
           echo "✅ Final Git validation passed."
 
       # ======================================================================
-      # 14. STAGE AND DETECT CHANGES
+      # 14. CHECK FOR CHANGES
       # ======================================================================
 
       - name: 🔎 Check for changes
@@ -782,9 +770,9 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
 
             echo
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "✨ Already synchronized"
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
             exit 0
           fi
@@ -792,16 +780,16 @@ jobs:
           echo "changed=true" >> "$GITHUB_OUTPUT"
 
           echo
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "📋 Synchronization changes detected"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
           echo
-          echo "📊 Statistics:"
+          echo "Statistics:"
           git diff --cached --stat
 
           echo
-          echo "📝 Files:"
+          echo "Files:"
           git diff --cached --name-status
 
       # ======================================================================
@@ -840,8 +828,6 @@ jobs:
 
           trap cleanup EXIT HUP INT TERM
 
-          rm -f -- "$TEMP_GIT_CONFIG"
-
           git config \
             --file "$TEMP_GIT_CONFIG" \
             "http.https://github.com/.extraheader" \
@@ -862,7 +848,7 @@ jobs:
           echo "✅ Synchronization branch pushed."
 
       # ======================================================================
-      # 17. CREATE / UPDATE REVIEW PR
+      # 17. CREATE / UPDATE PR
       # ======================================================================
 
       - name: 🔀 Create or update review PR
@@ -894,77 +880,61 @@ jobs:
 
           This pull request was generated automatically.
 
-          🔒 **Upstream is treated as untrusted data.**
+          Upstream is treated as untrusted data.
 
-          Upstream scripts, workflows, tests, builds, package managers,
-          dependencies, and executables were NOT run.
-
-          ### 📌 Pinned revisions
+          ### Pinned revisions
 
           | Source | Revision |
           |---|---|
-          | 🏠 Fork | \`$FORK_COMMIT\` |
-          | 🌐 Upstream | \`$UPSTREAM_COMMIT\` |
-          | 🌳 Upstream tree | \`$UPSTREAM_TREE\` |
+          | Fork | \`$FORK_COMMIT\` |
+          | Upstream | \`$UPSTREAM_COMMIT\` |
+          | Upstream tree | \`$UPSTREAM_TREE\` |
 
-          ### 🌐 Trusted upstream
+          ### Trusted upstream
 
-          \`${UPSTREAM_URL}\`
+          \`$UPSTREAM_URL\`
 
-          ### 🔒 Fork-owned files
+          ### Fork-owned files
+
+          These files remain controlled by this fork:
 
           - \`config.toml\`
           - \`.github/workflows/upstream-sync.yml\`
 
-          Any upstream version of these paths is discarded.
+          ### Security checks
 
-          ### 🛡️ Security checks
-
-          - Trusted upstream identity verified
+          - Trusted upstream URL verified
           - Fork commit pinned
           - Upstream commit pinned
           - Upstream tree pinned
           - Protected files preserved
           - Protected files verified byte-for-byte
-          - Protected Git modes verified
-          - Protected directories verified
-          - Protected symlinks rejected
-          - Upstream protected paths inspected
-          - Complete non-protected tree compared against upstream
-          - GitHub Actions boundary enforced
-          - Unexpected workflow content rejected
-          - Upstream workflows blocked
-          - sync-hagezi.sh regular-file validation
-          - sync-hagezi.sh symlink rejected
-          - sync-hagezi.sh executable mode verified
+          - Protected GitHub Actions boundary enforced
+          - Non-protected tree compared against upstream
+          - \`sync-hagezi.sh\` validated
           - Bash syntax checked
-          - Git index checked
-          - Git whitespace validation completed
-          - Upstream scripts NOT executed
-          - Upstream workflows NOT executed
-          - Upstream dependencies NOT installed
-          - Upstream tests NOT executed
-          - Upstream builds NOT executed
+          - Upstream scripts were NOT executed
+          - Upstream workflows were NOT executed
+          - Upstream dependencies were NOT installed
+          - Upstream tests were NOT executed
+          - Upstream builds were NOT executed
 
-          ### 👀 Manual review required
+          ### Manual review required
 
-          **This PR is NOT automatically merged.**
+          This PR is NOT automatically merged.
 
-          Review the complete diff and manually merge the PR into \`main\`.
-
-          ---
-          🤖 Generated automatically by GitHub Actions.
+          Review the complete diff before merging.
           EOF
           )"
 
           if [[ -n "$EXISTING_PR" ]]; then
-            echo "🔄 Updating existing PR #$EXISTING_PR"
+            echo "Updating existing PR #$EXISTING_PR"
 
             gh pr edit "$EXISTING_PR" \
               --title "$PR_TITLE" \
               --body "$PR_BODY"
           else
-            echo "🆕 Creating new synchronization PR"
+            echo "Creating new synchronization PR"
 
             gh pr create \
               --base "$TARGET_BRANCH" \
@@ -985,6 +955,6 @@ jobs:
           set -euo pipefail
 
           echo
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "✨ Upstream and fork are already synchronized."
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
