@@ -13,17 +13,14 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # TRUSTED UPSTREAM
   UPSTREAM_OWNER: "0x11DFE"
   UPSTREAM_REPOSITORY: "controld-hagezi-sync"
   UPSTREAM_URL: "https://github.com/0x11DFE/controld-hagezi-sync.git"
   UPSTREAM_BRANCH: "main"
 
-  # FORK
   TARGET_BRANCH: "main"
   SYNC_BRANCH: "automation/upstream-sync"
 
-  # FORK-OWNED FILES
   PROTECTED_CONFIG: "config.toml"
   PROTECTED_WORKFLOW: ".github/workflows/upstream-sync.yml"
 
@@ -42,10 +39,6 @@ jobs:
         shell: bash
 
     steps:
-
-      # ================================================================
-      # 1. CHECKOUT
-      # ================================================================
 
       - name: 📥 Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -70,11 +63,7 @@ jobs:
           git config --local advice.detachedHead false
           git config --local credential.helper ""
 
-          echo "Git configured."
-
-      # ================================================================
-      # 2. VERIFY TRUSTED UPSTREAM
-      # ================================================================
+          echo "✅ Git configured."
 
       - name: 🔐 Verify upstream identity
         run: |
@@ -113,10 +102,6 @@ jobs:
           }
 
           echo "✅ Trusted upstream identity verified."
-
-      # ================================================================
-      # 3. FETCH AND PIN COMMITS
-      # ================================================================
 
       - name: 🌐 Fetch and pin revisions
         run: |
@@ -185,10 +170,6 @@ jobs:
 
           echo "✅ Revisions pinned."
 
-      # ================================================================
-      # 4. RESET TO FORK
-      # ================================================================
-
       - name: 🧹 Reset workspace
         run: |
           set -euo pipefail
@@ -204,10 +185,6 @@ jobs:
           }
 
           echo "✅ Workspace matches trusted fork."
-
-      # ================================================================
-      # 5. SAVE FORK-OWNED FILES
-      # ================================================================
 
       - name: 🛡️ Save fork-owned files
         run: |
@@ -259,10 +236,6 @@ jobs:
 
           echo "✅ Fork-owned files saved."
 
-      # ================================================================
-      # 6. IMPORT UPSTREAM TREE
-      # ================================================================
-
       - name: 📦 Import upstream tree
         run: |
           set -euo pipefail
@@ -273,17 +246,10 @@ jobs:
           echo "Importing upstream commit:"
           echo "$UPSTREAM_COMMIT"
 
-          # This changes Git's tree/index only.
-          # It does NOT execute upstream files.
-
           git read-tree --reset -u "$UPSTREAM_COMMIT"
-
-          # Remove upstream copies of fork-owned files.
 
           rm -f -- "$PROTECTED_CONFIG"
           rm -f -- "$PROTECTED_WORKFLOW"
-
-          # Ensure .github/workflows exists safely.
 
           if [[ -e ".github" && ! -d ".github" ]]; then
             echo "::error::.github is not a directory"
@@ -302,8 +268,6 @@ jobs:
             exit 1
           }
 
-          # Restore fork-owned files.
-
           install -m 600 \
             "$PROTECTED_DIR/config.toml" \
             "$PROTECTED_CONFIG"
@@ -314,10 +278,6 @@ jobs:
 
           echo "✅ Upstream imported."
           echo "✅ Fork-owned files restored."
-
-      # ================================================================
-      # 7. VERIFY PROTECTED FILES
-      # ================================================================
 
       - name: 🔐 Verify protected files
         run: |
@@ -340,15 +300,6 @@ jobs:
             }
 
           echo "✅ Protected files verified byte-for-byte."
-
-      # ================================================================
-      # 8. VERIFY WORKFLOWS
-      #
-      # IMPORTANT:
-      # Existing workflows are allowed.
-      #
-      # We only verify that OUR sync workflow has not been replaced.
-      # ================================================================
 
       - name: 🧱 Verify workflow boundary
         run: |
@@ -385,14 +336,10 @@ jobs:
           find .github/workflows \
             -maxdepth 1 \
             -type f \
-            -printf '  %f\n' \
-            | sort
+            -printf '  %f\n' |
+            sort
 
           echo "✅ Workflow boundary verified."
-
-      # ================================================================
-      # 9. VERIFY NON-PROTECTED TREE
-      # ================================================================
 
       - name: 🧬 Verify final tree against upstream
         run: |
@@ -403,43 +350,29 @@ jobs:
           UPSTREAM_LIST="$RUNNER_TEMP/upstream-tree-list"
           FINAL_LIST="$RUNNER_TEMP/final-tree-list"
 
-          git ls-tree \
-            -r \
-            --full-tree \
-            "$UPSTREAM_COMMIT" |
+          git ls-tree -r --full-tree "$UPSTREAM_COMMIT" |
             awk '
-              {
-                path = $4
-
-                if (
-                  path != "config.toml" &&
-                  path != ".github/workflows/upstream-sync.yml"
-                ) {
-                  print
-                }
+              $4 != "config.toml" &&
+              $4 != ".github/workflows/upstream-sync.yml" {
+                print
               }
             ' |
             sort > "$UPSTREAM_LIST"
 
           git ls-files --stage |
             awk '
-              {
+              $4 != "config.toml" &&
+              $4 != ".github/workflows/upstream-sync.yml" {
                 mode = $1
                 object = $2
-                path = $4
 
-                if (
-                  path != "config.toml" &&
-                  path != ".github/workflows/upstream-sync.yml"
-                ) {
-                  if (mode == "160000") {
-                    type = "commit"
-                  } else {
-                    type = "blob"
-                  }
-
-                  print mode " " type " " object "\t" path
+                if (mode == "160000") {
+                  type = "commit"
+                } else {
+                  type = "blob"
                 }
+
+                print mode " " type " " object "\t" $4
               }
             ' |
             sort > "$FINAL_LIST"
@@ -455,10 +388,6 @@ jobs:
           fi
 
           echo "✅ Non-protected tree matches upstream."
-
-      # ================================================================
-      # 10. STATIC VALIDATION
-      # ================================================================
 
       - name: 🧪 Static validation
         run: |
@@ -489,10 +418,6 @@ jobs:
 
           echo "✅ Bash syntax check passed."
           echo "ℹ️ sync-hagezi.sh was NOT executed."
-
-      # ================================================================
-      # 11. FINAL VALIDATION
-      # ================================================================
 
       - name: 🔎 Final validation
         run: |
@@ -530,10 +455,6 @@ jobs:
           echo "=========================================="
           echo "✅ Final validation passed."
 
-      # ================================================================
-      # 12. CHECK CHANGES
-      # ================================================================
-
       - name: 🔎 Check for changes
         id: changes
         run: |
@@ -564,10 +485,6 @@ jobs:
           echo "Changed files:"
           git diff --cached --name-status
 
-      # ================================================================
-      # 13. COMMIT
-      # ================================================================
-
       - name: 📝 Commit synchronization
         if: steps.changes.outputs.changed == 'true'
         run: |
@@ -580,10 +497,6 @@ jobs:
             -m "Upstream commit: $UPSTREAM_COMMIT"
 
           echo "✅ Synchronization commit created."
-
-      # ================================================================
-      # 14. PUSH
-      # ================================================================
 
       - name: 🚀 Push synchronization branch
         if: steps.changes.outputs.changed == 'true'
@@ -601,10 +514,6 @@ jobs:
             "HEAD:${SYNC_BRANCH}"
 
           echo "✅ Synchronization branch pushed."
-
-      # ================================================================
-      # 15. CREATE / UPDATE PR
-      # ================================================================
 
       - name: 🔀 Create or update Pull Request
         if: steps.changes.outputs.changed == 'true'
@@ -647,8 +556,6 @@ jobs:
 
           ### Fork-owned files
 
-          These files remain controlled by this repository:
-
           - \`config.toml\`
           - \`.github/workflows/upstream-sync.yml\`
 
@@ -658,8 +565,8 @@ jobs:
           - Upstream commit pinned
           - Upstream tree pinned
           - Protected files preserved
-          - Protected files verified byte-for-byte
-          - Existing workflows preserved
+          - Protected files verified
+          - Existing workflows allowed
           - Non-protected tree compared with upstream
           - Bash syntax checked
           - Upstream script was NOT executed
@@ -691,10 +598,6 @@ jobs:
           fi
 
           echo "✅ Pull Request ready."
-
-      # ================================================================
-      # 16. COMPLETE
-      # ================================================================
 
       - name: ✨ Complete
         if: steps.changes.outputs.changed == 'false'
