@@ -2,44 +2,8 @@ name: 🔄 Upstream Sync
 
 on:
   schedule:
-    # Every 6 hours at 30 minutes past the hour (UTC):
-    # 00:30, 06:30, 12:30, 18:30
     - cron: "30 */6 * * *"
   workflow_dispatch:
-
-# ============================================================================
-# SECURITY MODEL
-# ============================================================================
-#
-# UPSTREAM IS UNTRUSTED DATA.
-#
-# This workflow:
-#   1. verifies the trusted upstream identity
-#   2. fetches the trusted fork
-#   3. fetches the pinned upstream branch
-#   4. pins the exact upstream commit + tree
-#   5. preserves fork-owned files
-#   6. imports the exact upstream Git tree
-#   7. restores fork-owned files
-#   8. verifies every non-protected path against upstream
-#   9. performs static validation only
-#  10. creates/updates a review PR
-#
-# This workflow NEVER:
-#   - executes upstream scripts
-#   - sources upstream shell code
-#   - runs upstream tests
-#   - runs upstream builds
-#   - installs upstream dependencies
-#   - executes upstream GitHub Actions
-#   - executes upstream package managers
-#   - auto-merges the synchronization PR
-#
-# Fork-owned files:
-#   config.toml
-#   .github/workflows/upstream-sync.yml
-#
-# ============================================================================
 
 permissions:
   contents: read
@@ -125,13 +89,23 @@ jobs:
         run: |
           set -euo pipefail
 
+          echo "=========================================="
+          echo "DEBUG: WORKFLOW VERSION 2026-08-19-A"
+          echo "=========================================="
+          echo "UPSTREAM_OWNER=[$UPSTREAM_OWNER]"
+          echo "UPSTREAM_REPOSITORY=[$UPSTREAM_REPOSITORY]"
+          echo "UPSTREAM_URL=[$UPSTREAM_URL]"
+          echo "UPSTREAM_BRANCH=[$UPSTREAM_BRANCH]"
+          echo "=========================================="
+
           EXPECTED_URL="https://github.com/${UPSTREAM_OWNER}/${UPSTREAM_REPOSITORY}.git"
 
-          # Normalize the configured URL.
-          # This accepts the exact HTTPS URL with or without a trailing slash.
           NORMALIZED_URL="${UPSTREAM_URL%/}"
 
-          # Reject anything except the exact trusted GitHub repository.
+          echo "EXPECTED_URL=[$EXPECTED_URL]"
+          echo "NORMALIZED_URL=[$NORMALIZED_URL]"
+          echo "=========================================="
+
           if [[ "$NORMALIZED_URL" != "$EXPECTED_URL" ]]; then
             echo "::error::Configured upstream URL does not match trusted identity"
             echo "::error::Expected: $EXPECTED_URL"
@@ -145,17 +119,17 @@ jobs:
           fi
 
           if [[ "$UPSTREAM_OWNER" != "0x11DFE" ]]; then
-            echo "::error::Unexpected upstream owner"
+            echo "::error::Unexpected upstream owner: $UPSTREAM_OWNER"
             exit 1
           fi
 
           if [[ "$UPSTREAM_REPOSITORY" != "controld-hagezi-sync" ]]; then
-            echo "::error::Unexpected upstream repository"
+            echo "::error::Unexpected upstream repository: $UPSTREAM_REPOSITORY"
             exit 1
           fi
 
           if [[ "$UPSTREAM_BRANCH" != "main" ]]; then
-            echo "::error::Unexpected upstream branch"
+            echo "::error::Unexpected upstream branch: $UPSTREAM_BRANCH"
             exit 1
           fi
 
@@ -165,7 +139,9 @@ jobs:
           echo "  branch: ${UPSTREAM_BRANCH}"
           echo "  url:    ${NORMALIZED_URL}"
 
+          echo "=========================================="
           echo "✅ Upstream identity verified."
+          echo "=========================================="
 
       # ======================================================================
       # 3. FETCH AND PIN EXACT REVISIONS
@@ -564,8 +540,8 @@ jobs:
             find "$WORKFLOW_DIR" \
               -mindepth 1 \
               -maxdepth 1 \
-              -printf '%P\n' \
-              | sort
+              -printf '%P\n' |
+              sort
           )
 
           if [[ "${#ENTRIES[@]}" -ne 1 ||
@@ -698,9 +674,6 @@ jobs:
           }
 
           echo "🔍 Running Bash syntax check..."
-
-          # bash -n parses only.
-          # It does NOT execute the script.
 
           bash -n "$FILE"
 
