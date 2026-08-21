@@ -1,0 +1,176 @@
+name: Sync from upstream
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync upstream while preserving config.toml
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/0x11DFE/controld-hagezi-sync.git
+          git fetch --prune upstream main
+
+      - name: Check for upstream changes
+        id: check
+        run: |
+          UPSTREAM_SHA="$(git rev-parse upstream/main)"
+          LOCAL_SHA="$(git rev-parse HEAD)"
+
+          echo "Fork HEAD:     ${LOCAL_SHA}"
+          echo "Upstream HEAD: ${UPSTREAM_SHA}"
+
+          if git merge-base --is-ancestor "${UPSTREAM_SHA}" HEAD; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Fork is already up to date."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Upstream has new changes."
+          fi
+
+      - name: Save fork config
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          cp config.toml "$RUNNER_TEMP/config.toml.fork"
+
+      - name: Check upstream config
+        if: steps.check.outputs.changed == 'true'
+        id: config
+        run: |
+          if git diff --quiet HEAD..upstream/main -- config.toml; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Upstream did not change config.toml."
+            exit 0
+          fi
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+          echo "::warning::Upstream changed config.toml."
+          echo "::warning::Your fork's config.toml will be preserved."
+
+          echo ""
+          echo "========== UPSTREAM config.toml CHANGES =========="
+          git diff HEAD..upstream/main -- config.toml || true
+          echo "==================================================="
+
+          mkdir -p "$RUNNER_TEMP/artifacts"
+
+          git show upstream/main:config.toml \
+            > "$RUNNER_TEMP/artifacts/upstream-config.toml"
+
+      - name: Merge upstream
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          set -e
+
+          if git merge --no-edit --no-ff upstream/main; then
+            echo "Upstream merged successfully."
+            exit 0
+          fi
+
+          echo "::warning::Merge conflict detected."
+
+          CONFLICTS="$(git diff --name-only --diff-filter=U)"
+
+          echo ""
+          echo "========== CONFLICTING FILES =========="
+          echo "${CONFLICTS}"
+          echo "========================================"
+
+          if echo "${CONFLICTS}" | grep -qx "config.toml"; then
+            echo "Keeping fork's config.toml."
+
+            git checkout --ours -- config.toml
+            git add config.toml
+
+            REMAINING="$(git diff --name-only --diff-filter=U)"
+
+            if [ -n "${REMAINING}" ]; then
+              echo "::error::Unexpected conflict in another file:"
+              echo "${REMAINING}"
+
+              git merge --abort
+              exit 1
+            fi
+
+            git commit --no-edit
+
+            echo "config.toml conflict resolved."
+            exit 0
+          fi
+
+          echo "::error::Unexpected merge conflict."
+          echo "::error::Only config.toml may be resolved automatically."
+
+          git merge --abort
+          exit 1
+
+      - name: Restore fork config
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          cp "$RUNNER_TEMP/config.toml.fork" config.toml
+          git add config.toml
+
+          if git diff --cached --quiet; then
+            echo "config.toml is already correct."
+          else
+            git commit -m "Preserve fork config.toml"
+            echo "Fork config.toml restored."
+          fi
+
+      - name: Verify fork files
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          test -f config.toml || {
+            echo "::error::config.toml is missing."
+            exit 1
+          }
+
+          test -f .github/workflows/sync-upstream-teddy.yml || {
+            echo "::error::sync-upstream-teddy.yml is missing."
+            exit 1
+          }
+
+          echo "Fork-specific files verified."
+
+      - name: Upload upstream config
+        if: steps.check.outputs.changed == 'true' && steps.config.outputs.changed == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: upstream-config-${{ github.run_id }}
+          path: ${{ runner.temp }}/artifacts/upstream-config.toml
+          retention-days: 7
+
+      - name: Push changes
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          git push origin main
+          echo "Sync completed successfully."
+
+      - name: Already up to date
+        if: steps.check.outputs.changed == 'false'
+        run: |
+          echo "Fork is already synchronized."
